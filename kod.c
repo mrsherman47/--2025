@@ -51,6 +51,7 @@ void show_truck_input_dialog(HWND parent);
 void distribute_trucks(HWND hwnd);
 int** allocate_matrix(int rows, int cols);
 void free_matrix(int** matrix, int rows);
+void load_data_from_file(HWND hwnd, const wchar_t* filePath);
 void northwest_corner(int* supply, int* demand, int** cost, int rows, int cols, int** allocation, long long* total_cost);
 void least_cost_method(int* supply, int* demand, int** cost, int rows, int cols, int** allocation, long long* total_cost);
 void print_results(HWND hwnd, int** allocation, int rows, int cols, const wchar_t* method, long long total_cost);
@@ -179,19 +180,83 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
         case BUTTON_INPUT_DATA: {
             wchar_t rowsText[10], colsText[10];
+
+            // Получаем текст из полей ввода для количества поставщиков и потребителей.
             GetWindowText(GetDlgItem(hwnd, EDIT_ROWS), rowsText, 10);
             GetWindowText(GetDlgItem(hwnd, EDIT_COLS), colsText, 10);
+
+            // Конвертируем значения в целые числа
             g_rows = _wtoi(rowsText);
             g_cols = _wtoi(colsText);
 
+            // Проверяем значения на корректность
             if (g_rows <= 0 || g_cols <= 0) {
                 MessageBox(hwnd, L"Введите корректные положительные значения для поставщиков и потребителей.",
                     L"Ошибка", MB_ICONERROR);
                 break;
             }
-            show_data_input_dialog(hwnd);
+
+            // Освобождаем память от предыдущих данных, если она была выделена
+            if (g_supply) {
+                free(g_supply);
+                g_supply = NULL;
+            }
+            if (g_demand) {
+                free(g_demand);
+                g_demand = NULL;
+            }
+            if (g_cost) {
+                free_matrix(g_cost, g_rows);
+                g_cost = NULL;
+            }
+
+            // Выделяем память для ввода данных
+            g_supply = (int*)malloc(g_rows * sizeof(int));
+            g_demand = (int*)malloc(g_cols * sizeof(int));
+            g_cost = allocate_matrix(g_rows, g_cols);
+
+            if (!g_supply || !g_demand || !g_cost) {
+                MessageBox(hwnd, L"Не удалось выделить память для данных.", L"Ошибка", MB_ICONERROR);
+
+                // Освобождаем память в случае ошибки
+                if (g_supply) free(g_supply);
+                if (g_demand) free(g_demand);
+                if (g_cost) free_matrix(g_cost, g_rows);
+
+                g_supply = NULL;
+                g_demand = NULL;
+                g_cost = NULL;
+                break;
+            }
+
+            // Открываем диалог для выбора текстового файла
+            OPENFILENAME ofn = { 0 };
+            wchar_t filePath[MAX_PATH] = L"";
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+            ofn.lpstrFile = filePath;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+            if (GetOpenFileName(&ofn)) {
+                // Загружаем данные из выбранного файла
+                load_data_from_file(hwnd, filePath);
+            }
+            else {
+                // Если пользователь отменил выбор файла, освобождаем память
+                if (g_supply) free(g_supply);
+                if (g_demand) free(g_demand);
+                if (g_cost) free_matrix(g_cost, g_rows);
+
+                g_supply = NULL;
+                g_demand = NULL;
+                g_cost = NULL;
+                MessageBox(hwnd, L"Выбор файла отменен.", L"Информация", MB_ICONINFORMATION);
+            }
             break;
         }
+
         case BUTTON_RANDOM_DATA: {
             if (g_rows <= 0 || g_cols <= 0) {
                 MessageBox(hwnd, L"Введите корректные значения для количества поставщиков и потребителей.", L"Ошибка", MB_ICONERROR);
@@ -353,30 +418,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             // Открываем файл в браузере
             ShellExecute(NULL, L"open", filePath, NULL, NULL, SW_SHOWNORMAL);
-
-            // Также отображаем данные в текстовом поле приложения
-            wchar_t* buffer = (wchar_t*)malloc(1024 * sizeof(wchar_t));
-            if (!buffer) {
-                MessageBox(hwnd, L"Ошибка выделения памяти для отображения данных.", L"Ошибка", MB_ICONERROR);
-                break;
-            }
-            int offset = 0;
-            offset += swprintf_s(buffer + offset, 1024 - offset, L"Запасы поставщиков:\r\n");
-            for (int i = 0; i < g_rows; i++) {
-                offset += swprintf_s(buffer + offset, 1024 - offset, L"Поставщик %d: %d\r\n", i + 1, g_supply[i]);
-            }
-            offset += swprintf_s(buffer + offset, 1024 - offset, L"\r\nПотребности потребителей:\r\n");
-            for (int j = 0; j < g_cols; j++) {
-                offset += swprintf_s(buffer + offset, 1024 - offset, L"Потребитель %d: %d\r\n", j + 1, g_demand[j]);
-            }
-            offset += swprintf_s(buffer + offset, 1024 - offset, L"\r\nСтоимости перевозки:\r\n");
-            for (int i = 0; i < g_rows; i++) {
-                for (int j = 0; j < g_cols; j++) {
-                    offset += swprintf_s(buffer + offset, 1024 - offset, L"П%d->П%d: %d\r\n", i + 1, j + 1, g_cost[i][j]);
-                }
-            }
-            SetWindowText(GetDlgItem(hwnd, STATIC_RESULT), buffer);
-            free(buffer);
             break;
         }
 
@@ -477,87 +518,10 @@ LRESULT CALLBACK DataDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     static HWND* demandEdits = NULL;
     static HWND** costEdits = NULL;
     static int arraysInitialized = 0;
-    
+
 
 
     switch (uMsg) {
-    case WM_CREATE: {
-        int yOffset = 20;
-        int xOffset = 20;
-        int fieldWidth = 50;
-        int fieldHeight = 25;
-        int spacing = 10;
-
-        supplyEdits = (HWND*)malloc(g_rows * sizeof(HWND));
-        demandEdits = (HWND*)malloc(g_cols * sizeof(HWND));
-        costEdits = (HWND**)malloc(g_rows * sizeof(HWND*));
-        if (!supplyEdits || !demandEdits || !costEdits) {
-            MessageBox(hwnd, L"Не удалось выделить память для элементов управления.", L"Ошибка", MB_ICONERROR);
-            DestroyWindow(hwnd);
-            break;
-        }
-        for (int i = 0; i < g_rows; i++) {
-            costEdits[i] = (HWND*)malloc(g_cols * sizeof(HWND));
-            if (!costEdits[i]) {
-                MessageBox(hwnd, L"Не удалось выделить память для элементов управления.", L"Ошибка", MB_ICONERROR);
-                DestroyWindow(hwnd);
-                break;
-            }
-        }
-        arraysInitialized = 1;
-
-        CreateWindow(L"STATIC", L"Запасы поставщиков:", WS_VISIBLE | WS_CHILD,
-            xOffset, yOffset, 150, fieldHeight, hwnd, NULL, NULL, NULL);
-        yOffset += fieldHeight + spacing;
-
-        for (int i = 0; i < g_rows; i++) {
-            wchar_t label[50];
-            swprintf_s(label, 50, L"Поставщик %d:", i + 1);
-            CreateWindow(L"STATIC", label, WS_VISIBLE | WS_CHILD,
-                xOffset, yOffset, 100, fieldHeight, hwnd, NULL, NULL, NULL);
-            supplyEdits[i] = CreateWindow(L"EDIT", L"0", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER,
-                xOffset + 110, yOffset, fieldWidth, fieldHeight, hwnd, (HMENU)(EDIT_SUPPLY_BASE + i), NULL, NULL);
-            yOffset += fieldHeight + spacing;
-        }
-
-        yOffset += spacing * 2;
-        CreateWindow(L"STATIC", L"Потребности потребителей:", WS_VISIBLE | WS_CHILD,
-            xOffset, yOffset, 200, fieldHeight, hwnd, NULL, NULL, NULL);
-        yOffset += fieldHeight + spacing;
-
-        for (int j = 0; j < g_cols; j++) {
-            wchar_t label[50];
-            swprintf_s(label, 50, L"Потребитель %d:", j + 1);
-            CreateWindow(L"STATIC", label, WS_VISIBLE | WS_CHILD,
-                xOffset, yOffset, 100, fieldHeight, hwnd, NULL, NULL, NULL);
-            demandEdits[j] = CreateWindow(L"EDIT", L"0", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER,
-                xOffset + 110, yOffset, fieldWidth, fieldHeight, hwnd, (HMENU)(EDIT_DEMAND_BASE + j), NULL, NULL);
-            yOffset += fieldHeight + spacing;
-        }
-
-        yOffset += spacing * 2;
-        CreateWindow(L"STATIC", L"Стоимости перевозки:", WS_VISIBLE | WS_CHILD,
-            xOffset, yOffset, 200, fieldHeight, hwnd, NULL, NULL, NULL);
-        yOffset += fieldHeight + spacing;
-
-        for (int i = 0; i < g_rows; i++) {
-            for (int j = 0; j < g_cols; j++) {
-                wchar_t label[50];
-                swprintf_s(label, 50, L"П%d -> П%d:", i + 1, j + 1);
-                CreateWindow(L"STATIC", label, WS_VISIBLE | WS_CHILD,
-                    xOffset + j * (fieldWidth + spacing), yOffset + i * (fieldHeight + spacing), fieldWidth, fieldHeight, hwnd, NULL, NULL, NULL);
-                costEdits[i][j] = CreateWindow(L"EDIT", L"0", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER,
-                    xOffset + j * (fieldWidth + spacing) + fieldWidth, yOffset + i * (fieldHeight + spacing), fieldWidth, fieldHeight, hwnd, (HMENU)(EDIT_COST_BASE + i * g_cols + j), NULL, NULL);
-            }
-        }
-        yOffset += g_rows * (fieldHeight + spacing) + spacing * 2;
-
-        CreateWindow(L"BUTTON", L"Сохранить данные", WS_VISIBLE | WS_CHILD,
-            xOffset, yOffset, 120, 30, hwnd, (HMENU)BUTTON_SAVE_DATA, NULL, NULL);
-        CreateWindow(L"BUTTON", L"Закрыть", WS_VISIBLE | WS_CHILD,
-            xOffset + 130, yOffset, 120, 30, hwnd, (HMENU)BUTTON_CLOSE_DIALOG, NULL, NULL);
-        break;
-    }
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
         case BUTTON_SAVE_DATA: {
@@ -612,6 +576,177 @@ LRESULT CALLBACK DataDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
     }
     return 0;
+}
+
+void load_data_from_file(HWND hwnd, const wchar_t* filePath) {
+    FILE* fp;
+    if (_wfopen_s(&fp, filePath, L"r, ccs=UTF-8") != 0 || !fp) {
+        MessageBox(hwnd, L"Не удалось открыть файл для чтения данных.", L"Ошибка", MB_ICONERROR);
+        return;
+    }
+
+    // Освобождаем старую память, если она была выделена
+    if (g_supply) {
+        free(g_supply);
+        g_supply = NULL;
+    }
+    if (g_demand) {
+        free(g_demand);
+        g_demand = NULL;
+    }
+    if (g_cost) {
+        free_matrix(g_cost, g_rows);
+        g_cost = NULL;
+    }
+    if (g_allocation) {
+        free_matrix(g_allocation, g_rows);
+        g_allocation = NULL;
+    }
+
+    // Читаем размеры матрицы
+    wchar_t buffer[256];
+    int rows = 0, cols = 0;
+    if (!fgetws(buffer, 256, fp) || swscanf_s(buffer, L"rows: %d", &rows) != 1) {
+        MessageBox(hwnd, L"Ошибка чтения строк из файла.", L"Ошибка", MB_ICONERROR);
+        fclose(fp);
+        return;
+    }
+    if (!fgetws(buffer, 256, fp) || swscanf_s(buffer, L"cols: %d", &cols) != 1) {
+        MessageBox(hwnd, L"Ошибка чтения столбцов из файла.", L"Ошибка", MB_ICONERROR);
+        fclose(fp);
+        return;
+    }
+
+    if (rows <= 0 || cols <= 0) {
+        MessageBox(hwnd, L"Некорректные размеры данных в файле.", L"Ошибка", MB_ICONERROR);
+        fclose(fp);
+        return;
+    }
+
+    g_rows = rows;
+    g_cols = cols;
+
+    // Выделяем память под запасы поставщиков
+    g_supply = (int*)malloc(rows * sizeof(int));
+    if (!g_supply) {
+        MessageBox(hwnd, L"Ошибка выделения памяти для запасов.", L"Ошибка", MB_ICONERROR);
+        fclose(fp);
+        return;
+    }
+
+    // Читаем запасы поставщиков
+    if (!fgetws(buffer, 256, fp) || wcsstr(buffer, L"supply: ") == NULL) {
+        MessageBox(hwnd, L"Ошибка чтения запасов из файла.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        g_supply = NULL;
+        fclose(fp);
+        return;
+    }
+    wchar_t* supply_str = wcsstr(buffer, L"supply: ") + 8; // Сдвиг на 8 символов, чтобы пропустить "supply: "
+    wchar_t* token = NULL;
+    wchar_t* context = NULL; // Для wcstok_s
+    token = wcstok_s(supply_str, L" \n", &context); // Разделяем по пробелам или новой строке
+    for (int i = 0; i < rows && token; i++) {
+        g_supply[i] = _wtoi(token);
+        token = wcstok_s(NULL, L" \n", &context);
+    }
+
+    // Выделяем память под потребности потребителей
+    g_demand = (int*)malloc(cols * sizeof(int));
+    if (!g_demand) {
+        MessageBox(hwnd, L"Ошибка выделения памяти для потребностей.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        g_supply = NULL;
+        fclose(fp);
+        return;
+    }
+
+    // Читаем потребности потребителей
+    if (!fgetws(buffer, 256, fp) || wcsstr(buffer, L"demand: ") == NULL) {
+        MessageBox(hwnd, L"Ошибка чтения потребностей из файла.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        free(g_demand);
+        g_supply = NULL;
+        g_demand = NULL;
+        fclose(fp);
+        return;
+    }
+    wchar_t* demand_str = wcsstr(buffer, L"demand: ") + 8; // Сдвиг на 8 символов, чтобы пропустить "demand: "
+    token = wcstok_s(demand_str, L" \n", &context); // Разделяем по пробелам или новой строке
+    for (int j = 0; j < cols && token; j++) {
+        g_demand[j] = _wtoi(token);
+        token = wcstok_s(NULL, L" \n", &context);
+    }
+
+    // Выделяем память под матрицу стоимостей
+    g_cost = allocate_matrix(rows, cols);
+    if (!g_cost) {
+        MessageBox(hwnd, L"Ошибка выделения памяти для матрицы стоимостей.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        free(g_demand);
+        g_supply = NULL;
+        g_demand = NULL;
+        fclose(fp);
+        return;
+    }
+
+    // Пропускаем строку "cost:" (если она есть)
+    if (!fgetws(buffer, 256, fp) || wcsstr(buffer, L"cost:") == NULL) {
+        MessageBox(hwnd, L"Ошибка чтения заголовка стоимости из файла.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        free(g_demand);
+        free_matrix(g_cost, rows);
+        g_supply = NULL;
+        g_demand = NULL;
+        g_cost = NULL;
+        fclose(fp);
+        return;
+    }
+
+    // Читаем матрицу стоимостей
+    for (int i = 0; i < rows; i++) {
+        if (!fgetws(buffer, 256, fp)) {
+            MessageBox(hwnd, L"Ошибка чтения строки стоимости из файла.", L"Ошибка", MB_ICONERROR);
+            free(g_supply);
+            free(g_demand);
+            free_matrix(g_cost, rows);
+            g_supply = NULL;
+            g_demand = NULL;
+            g_cost = NULL;
+            fclose(fp);
+            return;
+        }
+        token = wcstok_s(buffer, L" \n", &context); // Разделяем по пробелам или новой строке
+        for (int j = 0; j < cols && token; j++) {
+            g_cost[i][j] = _wtoi(token);
+            token = wcstok_s(NULL, L" \n", &context);
+        }
+    }
+
+    fclose(fp);
+
+    // Проверяем баланс
+    if (!check_balance(g_supply, g_demand, g_rows, g_cols)) {
+        MessageBox(hwnd, L"Запасы и потребности не сбалансированы! Проверьте данные в файле.", L"Ошибка", MB_ICONERROR);
+        free(g_supply);
+        free(g_demand);
+        free_matrix(g_cost, g_rows);
+        g_supply = NULL;
+        g_demand = NULL;
+        g_cost = NULL;
+        g_rows = 0;
+        g_cols = 0;
+        return;
+    }
+
+    // Устанавливаем значения в поля ввода (для отображения пользователю)
+    wchar_t rowsText[10], colsText[10];
+    swprintf_s(rowsText, 10, L"%d", g_rows);
+    swprintf_s(colsText, 10, L"%d", g_cols);
+    SetWindowText(GetDlgItem(hwnd, EDIT_ROWS), rowsText);
+    SetWindowText(GetDlgItem(hwnd, EDIT_COLS), colsText);
+
+    MessageBox(hwnd, L"Данные успешно загружены из файла.", L"Успех", MB_ICONINFORMATION);
 }
 
 // Показать диалоговое окно для ввода данных
