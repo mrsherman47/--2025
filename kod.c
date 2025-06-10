@@ -1,8 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <limits.h>
+#include <stdbool.h>
 
 // Идентификаторы элементов управления
 #define BUTTON_SAVE_TO_FILE 103
@@ -19,19 +18,11 @@
 #define BUTTON_TRUCK_DISTRIBUTION 208
 #define STATIC_RESULT 300
 #define BUTTON_INPUT_DATA 203
+#define BUTTON_SAVE_DATA 204
 #define EDIT_SUPPLY_BASE 1000
 #define EDIT_DEMAND_BASE 2000
 #define EDIT_COST_BASE 3000
-#define BUTTON_SAVE_DATA 4000
 #define BUTTON_CLOSE_DIALOG 4001
-#define MENU_SAVE_FILE 5001
-#define MENU_LOAD_FILE 5002
-
-#define EDIT_TRUCK_COUNT 5000
-#define BUTTON_CONFIRM_TRUCKS 5001
-#define BUTTON_CLOSE_TRUCK_DIALOG 5002
-#define EDIT_TRUCK_CAPACITY_BASE 6000
-
 
 // Глобальные переменные для хранения размеров и данных
 int g_rows = 0, g_cols = 0;
@@ -46,8 +37,7 @@ int* g_truck_capacity = NULL;
 // Прототипы функций
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK DataDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK TruckDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-void show_truck_input_dialog(HWND parent);
+bool load_truck_data_from_file(HWND hwnd, const wchar_t* filePath);
 void distribute_trucks(HWND hwnd);
 int** allocate_matrix(int rows, int cols);
 void free_matrix(int** matrix, int rows);
@@ -64,7 +54,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_hInstance = hInstance;
     const wchar_t CLASS_NAME[] = L"TransportSolverSimple";
     const wchar_t DIALOG_CLASS_NAME[] = L"DataInputDialog";
-    const wchar_t TRUCK_DIALOG_CLASS_NAME[] = L"TruckInputDialog";
 
     // Регистрируем класс главного окна
     WNDCLASS wc = { 0 };
@@ -79,13 +68,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     dlgWc.hInstance = hInstance;
     dlgWc.lpszClassName = DIALOG_CLASS_NAME;
     RegisterClass(&dlgWc);
-
-    // Регистрируем класс для диалогового окна ввода данных о фурах
-    WNDCLASS truckDlgWc = { 0 };
-    truckDlgWc.lpfnWndProc = TruckDlgProc;
-    truckDlgWc.hInstance = hInstance;
-    truckDlgWc.lpszClassName = TRUCK_DIALOG_CLASS_NAME;
-    RegisterClass(&truckDlgWc);
 
     // Создаем главное окно
     HWND hwnd = CreateWindowEx(
@@ -162,10 +144,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 MessageBox(hwnd, L"Введите корректные положительные значения для поставщиков и потребителей.",
                     L"Ошибка", MB_ICONERROR);
             }
-            else {
-                MessageBox(hwnd, L"Данные о количестве поставщиков и потребителей подтверждены.",
-                    L"Успех", MB_ICONINFORMATION);
-            }
             break;
         }
         case BUTTON_TRUCK_DISTRIBUTION: {
@@ -173,9 +151,34 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 MessageBox(hwnd, L"Сначала выполните распределение грузов с помощью одного из методов!", L"Ошибка", MB_ICONERROR);
                 break;
             }
-            show_truck_input_dialog(hwnd);
+
+            OPENFILENAME ofn = { 0 };
+            wchar_t filePath[MAX_PATH] = L"";
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd;
+            ofn.lpstrFilter = L"Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+            ofn.lpstrFile = filePath;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            ofn.lpstrTitle = L"Выберите файл с данными о фурах";
+
+            if (GetOpenFileName(&ofn)) {
+                // Загружаем данные из файла и проверяем успех
+                if (load_truck_data_from_file(hwnd, filePath)) {
+                    // Если загрузка успешна, вызываем распределение
+                    distribute_trucks(hwnd);
+                }
+                if (GetOpenFileName(&ofn)) {
+                    // Загружаем данные из файла и проверяем успех
+                    if (load_truck_data_from_file(hwnd, filePath)) {
+                        // Если загрузка успешна, вызываем распределение
+                        distribute_trucks(hwnd);
+                    }
+                }
+            }
             break;
         }
+
         case BUTTON_INPUT_DATA: {
             // Открываем диалог для выбора текстового файла
             OPENFILENAME ofn = { 0 };
@@ -187,13 +190,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
 
-            if (GetOpenFileName(&ofn)) {
-                // Загружаем данные из выбранного файла, включая размеры
-                load_data_from_file(hwnd, filePath);
-            }
-            else {
-                MessageBox(hwnd, L"Выбор файла отменен.", L"Информация", MB_ICONINFORMATION);
-            }
+            if (GetOpenFileName(&ofn)) load_data_from_file(hwnd, filePath);
             break;
         }
 
@@ -211,7 +208,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             }
 
             // Показываем сообщение о подтверждении данных
-            int result = MessageBox(hwnd, L"Подтвердить введенные размеры для генерации данных?",
+            int result = MessageBox(hwnd, L"Подтвердить введенные размеры?",
                 L"Подтверждение", MB_YESNO | MB_ICONQUESTION);
             if (result == IDYES) {
                 // Освобождаем память от предыдущих данных, если она была выделена
@@ -246,7 +243,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                     }
                 }
 
-                MessageBox(hwnd, L"Случайные данные сгенерированы.", L"Успех", MB_ICONINFORMATION);
             }
             break;
         }
@@ -372,7 +368,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             // Сообщаем пользователю, что файл создан
             wchar_t msg[512];
             swprintf_s(msg, 512, L"Данные сохранены в файл: %ls", filePath);
-            MessageBox(hwnd, msg, L"Успех", MB_ICONINFORMATION);
 
             // Открываем файл в браузере
             ShellExecute(NULL, L"open", filePath, NULL, NULL, SW_SHOWNORMAL);
@@ -405,7 +400,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             SetWindowText(GetDlgItem(hwnd, EDIT_COLS), L"");
             // Очищаем область результатов
             SetWindowText(GetDlgItem(hwnd, STATIC_RESULT), L"");
-            MessageBox(hwnd, L"Все данные сброшены!", L"Успех", MB_ICONINFORMATION);
             break;
         }
         case BUTTON_SOLVE_NW: {
@@ -470,14 +464,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-// Оконная процедура для диалогового окна ввода данных
 LRESULT CALLBACK DataDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     static HWND* supplyEdits = NULL;
     static HWND* demandEdits = NULL;
     static HWND** costEdits = NULL;
     static int arraysInitialized = 0;
-
-
 
     switch (uMsg) {
     case WM_COMMAND:
@@ -585,7 +576,6 @@ void load_data_from_file(HWND hwnd, const wchar_t* filePath) {
     }
 
     fclose(fp);
-    MessageBox(hwnd, L"Данные успешно загружены из файла.", L"Успех", MB_ICONINFORMATION);
 }
 
 // Показать диалоговое окно для ввода данных
@@ -808,7 +798,6 @@ void print_results(HWND hwnd, int** allocation, int rows, int cols, const wchar_
     // Сообщаем пользователю, что файл создан
     wchar_t msg[512];
     swprintf_s(msg, 512, L"Результаты сохранены в файл: %ls", filePath);
-    MessageBox(hwnd, msg, L"Успех", MB_ICONINFORMATION);
 
     // Открываем файл в браузере
     ShellExecute(NULL, L"open", filePath, NULL, NULL, SW_SHOWNORMAL);
@@ -828,15 +817,14 @@ int check_balance(int* supply, int* demand, int rows, int cols) {
 void show_truck_input_dialog(HWND parent) {
     int dialogWidth = 400;
     int dialogHeight = 300;
-    // Динамически вычисляем высоту окна в зависимости от количества полей (ограничено 10 фурами)
-    int initialCount = (g_truck_count > 0) ? g_truck_count : 10;
-    if (initialCount > 10) initialCount = 10;
+    // Динамически вычисляем высоту окна в зависимости от количества полей
+    int initialCount = (g_truck_count > 0) ? g_truck_count : 10; // Учитываем текущее количество фур
     dialogHeight = 100 + initialCount * 35; // Учитываем поля ввода и отступы
     HWND hwndDialog = CreateWindowEx(
         WS_EX_DLGMODALFRAME,
         L"TruckInputDialog",
         L"Ввод данных о фурах",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VSCROLL, // Добавлен WS_VSCROLL для прокрутки
         CW_USEDEFAULT, CW_USEDEFAULT, dialogWidth, dialogHeight,
         parent, NULL, g_hInstance, NULL
     );
@@ -863,82 +851,78 @@ void show_truck_input_dialog(HWND parent) {
     }
 }
 
-LRESULT CALLBACK TruckDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-    case WM_CREATE:
-        // Создаем элементы управления для ввода данных о фурах
-        CreateWindow(L"STATIC", L"Количество фур:", WS_VISIBLE | WS_CHILD,
-            20, 20, 150, 25, hwnd, NULL, NULL, NULL);
-        CreateWindow(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER,
-            180, 20, 50, 25, hwnd, (HMENU)EDIT_TRUCK_COUNT, NULL, NULL);
-        CreateWindow(L"BUTTON", L"Подтвердить количество", WS_VISIBLE | WS_CHILD,
-            250, 20, 150, 25, hwnd, (HMENU)BUTTON_CONFIRM_TRUCKS, NULL, NULL);
-        CreateWindow(L"BUTTON", L"Закрыть", WS_VISIBLE | WS_CHILD,
-            20, 60, 150, 25, hwnd, (HMENU)BUTTON_CLOSE_TRUCK_DIALOG, NULL, NULL);
-        break;
-
-    case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case BUTTON_CONFIRM_TRUCKS: {
-            wchar_t truckCountText[10];
-            GetWindowText(GetDlgItem(hwnd, EDIT_TRUCK_COUNT), truckCountText, 10);
-            g_truck_count = _wtoi(truckCountText);
-            if (g_truck_count <= 0 || g_truck_count > 10) { // Ограничение на количество фур
-                MessageBox(hwnd, L"Введите корректное количество фур (1-10).", L"Ошибка", MB_ICONERROR);
-            }
-            else {
-                // Динамически создаем поля для ввода вместимости каждой фуры
-                for (int i = 0; i < g_truck_count; i++) {
-                    wchar_t label[50];
-                    swprintf_s(label, 50, L"Вместимость фуры %d:", i + 1);
-                    CreateWindow(L"STATIC", label, WS_VISIBLE | WS_CHILD,
-                        20, 100 + i * 35, 150, 25, hwnd, NULL, NULL, NULL);
-                    CreateWindow(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER,
-                        180, 100 + i * 35, 50, 25, hwnd, (HMENU)(EDIT_TRUCK_CAPACITY_BASE + i), NULL, NULL);
-                }
-                // Добавляем кнопку для сохранения данных о вместимости
-                CreateWindow(L"BUTTON", L"Сохранить данные о фурах", WS_VISIBLE | WS_CHILD,
-                    250, 100 + g_truck_count * 35, 150, 25, hwnd, (HMENU)BUTTON_SAVE_DATA, NULL, NULL);
-                MessageBox(hwnd, L"Количество фур подтверждено. Введите вместимость.", L"Успех", MB_ICONINFORMATION);
-            }
-            break;
-        }
-        case BUTTON_SAVE_DATA: {
-            if (g_truck_capacity) free(g_truck_capacity);
-            g_truck_capacity = (int*)malloc(g_truck_count * sizeof(int));
-            if (!g_truck_capacity) {
-                MessageBox(hwnd, L"Ошибка выделения памяти для данных о фурах.", L"Ошибка", MB_ICONERROR);
-                break;
-            }
-            for (int i = 0; i < g_truck_count; i++) {
-                wchar_t text[10];
-                GetWindowText(GetDlgItem(hwnd, EDIT_TRUCK_CAPACITY_BASE + i), text, 10);
-                g_truck_capacity[i] = _wtoi(text);
-                if (g_truck_capacity[i] <= 0) {
-                    MessageBox(hwnd, L"Введите корректную положительную грузоподъемность для всех фур.", L"Ошибка", MB_ICONERROR);
-                    free(g_truck_capacity);
-                    g_truck_capacity = NULL;
-                    return 0;
-                }
-            }
-            MessageBox(hwnd, L"Данные о фурах сохранены! Теперь можно выполнить распределение.", L"Успех", MB_ICONINFORMATION);
-            // Вызываем распределение по фурам после сохранения данных
-            distribute_trucks(GetParent(hwnd));
-            DestroyWindow(hwnd);
-            break;
-        }
-        case BUTTON_CLOSE_TRUCK_DIALOG:
-            DestroyWindow(hwnd);
-            break;
-        }
-        break;
-
-    case WM_DESTROY:
-        // Очищаем данные или выполняем другие действия при закрытии окна
-        break;
+bool load_truck_data_from_file(HWND hwnd, const wchar_t* filePath) {
+    FILE* fp;
+    if (_wfopen_s(&fp, filePath, L"r") != 0) {
+        MessageBox(hwnd, L"Не удалось открыть файл.", L"Ошибка", MB_ICONERROR);
+        return false;
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+
+    wchar_t line[100]; // Буфер для чтения строк
+
+    // Читаем первую строку для количества фур
+    if (!fgetws(line, 100, fp)) {
+        fclose(fp);
+        MessageBox(hwnd, L"Ошибка чтения количества фур из файла.", L"Ошибка", MB_ICONERROR);
+        return false;
+    }
+    // Удаляем перевод строки, если есть
+    line[wcscspn(line, L"\n")] = 0;
+    line[wcscspn(line, L"\r")] = 0; // Для совместимости с разными системами
+
+    g_truck_count = _wtoi(line); // Преобразуем в целое число
+    if (g_truck_count <= 0) {
+        fclose(fp);
+        MessageBox(hwnd, L"Количество фур должно быть положительным числом.", L"Ошибка", MB_ICONERROR);
+        return false;
+    }
+
+    // Освобождаем существующую память, если она есть
+    if (g_truck_capacity) {
+        free(g_truck_capacity);
+        g_truck_capacity = NULL;
+    }
+
+    // Выделяем память для массива вместимостей
+    g_truck_capacity = (int*)malloc(g_truck_count * sizeof(int));
+    if (!g_truck_capacity) {
+        fclose(fp);
+        MessageBox(hwnd, L"Ошибка выделения памяти для данных о фурах.", L"Ошибка", MB_ICONERROR);
+        g_truck_count = 0;
+        return false;
+    }
+
+    // Читаем каждую строку для вместимости фур
+    for (int i = 0; i < g_truck_count; i++) {
+        if (!fgetws(line, 100, fp)) {
+            fclose(fp);
+            free(g_truck_capacity);
+            g_truck_capacity = NULL;
+            g_truck_count = 0;
+            MessageBox(hwnd, L"Ошибка чтения данных о вместимости фур.", L"Ошибка", MB_ICONERROR);
+            return false;
+        }
+        // Удаляем перевод строки
+        line[wcscspn(line, L"\n")] = 0;
+        line[wcscspn(line, L"\r")] = 0;
+
+        int capacity = _wtoi(line); // Преобразуем в целое число
+        if (capacity <= 0) {
+            fclose(fp);
+            free(g_truck_capacity);
+            g_truck_capacity = NULL;
+            g_truck_count = 0;
+            MessageBox(hwnd, L"Вместимость фур должна быть положительным числом.", L"Ошибка", MB_ICONERROR);
+            return false;
+        }
+        g_truck_capacity[i] = capacity;
+    }
+
+    fclose(fp);
+    MessageBox(hwnd, L"Данные о фурах успешно загружены!", L"Успех", MB_ICONINFORMATION);
+    return true; // Возвращаем true при успешной загрузке
 }
+
 void distribute_trucks(HWND hwnd) {
     if (g_truck_count == 0 || !g_truck_capacity || !g_allocation) {
         MessageBox(hwnd, L"Нет данных о фурах или распределении грузов.", L"Ошибка", MB_ICONERROR);
